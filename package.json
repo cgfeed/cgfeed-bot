@@ -1,0 +1,27 @@
+{
+  "name": "cgfeed-bot",
+  "version": "0.1.0",
+  "author": "Sven Andersson <contact@svenandersson.se>",
+  "description": "computer graphics RSS feed scraper",
+  "contributors": [],
+  "bin": {
+    "cgfeed-bot": "./cgfeed-bot"
+  },
+  "scripts": {
+    "start": "node ./cgfeed-bot"
+  },
+  "main": "./cgfeed-bot",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cgfeed/cgfeed-bot.git"
+  },
+  "dependencies" : {
+    "request"    : "2.33.x",
+    "nconf"      : "0.6.x",
+    "feedparser" : "0.26.x"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=0.10"
+  }
+}
