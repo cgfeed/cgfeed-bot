@@ -18,7 +18,9 @@
   "dependencies" : {
     "request"    : "2.33.x",
     "nconf"      : "0.6.x",
-    "feedparser" : "0.26.x"
+    "feedparser" : "0.26.x",
+    "moment"     : "2.5.x",
+    "sanitizer"  : "0.1.1"
   },
   "license": "MIT",
   "engines": {
