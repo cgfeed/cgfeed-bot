@@ -20,6 +20,7 @@ nconf.defaults({
 var feeds_url      = nconf.get('CGFEED_JSON_PATH');
 var site_repo_path = nconf.get('CGFEED_GIT_PATH');
 
+console.log(feeds_url, site_repo_path);
 
 ////////////////////////////////////////////////////////////////////////////////
 // Global tables of timestamps for each feed.
@@ -197,6 +198,8 @@ function fetch(feed_name, feed_data) {
 request(feeds_url,
   function (error, response, body) {
 
+  console.log(error, response, body);
+
   if (!error && response.statusCode == 200) {
 
     try {
@@ -221,5 +224,6 @@ request(feeds_url,
   }
 })
 
+console.log("123");
 
 
