@@ -5,29 +5,32 @@ var FeedParser = require('feedparser');
 var moment     = require('moment');
 var fs         = require('fs');
 var sanitizer  = require('sanitizer');
-//var github  = require('github');
+var git        = require('gift');
 
 // Fix to avoid socket choking...
 var pool = new http.Agent(); pool.maxSockets = 4;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Setup nconf and load configuration
-nconf.argv().env();
+nconf.env().argv();
 nconf.defaults({
     'CGFEED_JSON_PATH' : 'http://localhost:4000/data/feeds.json',
-    'CGFEED_GIT_PATH'  : '../cgfeed.github.io/'
+    'CGFEED_REPO_PATH' : '../cgfeed.github.io',
+    'deploy'           : true,
+    'interval'         : 60*60
   });
 var feeds_url      = nconf.get('CGFEED_JSON_PATH');
-var site_repo_path = nconf.get('CGFEED_GIT_PATH');
+var site_repo_path = nconf.get('CGFEED_REPO_PATH');
+var dry_run        = !nconf.get('deploy');
+var check_interval = nconf.get('interval');
 
-console.log(feeds_url, site_repo_path);
 
 ////////////////////////////////////////////////////////////////////////////////
 // Global tables of timestamps for each feed.
 // Keeps track of the newest timestamp for each feed is, so we don't try to add
 // posts we already have added.
-var last_checked_lut = {}; // timestamps from last run
-var curr_checked_lut = {}; // timestamps for current run
+var last_state = {}; // timestamps from last run
+var curr_state = {}; // timestamps for current run
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -36,6 +39,50 @@ var curr_checked_lut = {}; // timestamps for current run
 var feed_table       = {};
 var feed_count       = 0;
 var feed_count_tot   = 0;
+
+
+////////////////////////////////////////////////////////////////////////////////
+// Setup site git repo
+var repo = git(site_repo_path)
+
+////////////////////////////////////////////////////////////////////////////////
+// "Deploys" new generated post files to the github repo
+function deploy( post_files, deploy_callback ) {
+
+  repo.add(post_files, function (err_add) {
+    if (err_add)
+    {
+      deploy_callback('Error while adding files to new deploy: ' + err_add );
+      return;
+    }
+
+    repo.commit("Autocommit via cgfeed-bot " + moment().format('YYYY-MM-DD'),
+      function (err_commit) {
+        
+        if (err_commit)
+        {
+          deploy_callback( 'Error while commiting deploy: ' + err_commit );
+          return;
+        }
+
+        repo.remote_push('master', function (err_push) {
+
+            if (err_push)
+            {
+              deploy_callback( 'Error while pushing on deploy: ' + err_push );
+              return;
+            }
+
+            deploy_callback(null);
+
+          });
+
+      });
+    
+  });
+
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Constructs a valid Jekyll "blog post" filename for a specific feed entry
@@ -52,15 +99,15 @@ function construct_jekyll_filename( feed_data, post_data ) {
   // have added to the site.
   var timestamp = date_obj.unix();
 
-  if (last_checked_lut[feed_url] && timestamp <= last_checked_lut[feed_url])
+  if (last_state[feed_url] && timestamp <= last_state[feed_url])
     return null;
 
-  if (curr_checked_lut[feed_url])
+  if (curr_state[feed_url])
   {
-    curr_checked_lut[feed_url] = Math.max(timestamp,
-                                                curr_checked_lut[feed_url]);
+    curr_state[feed_url] = Math.max(timestamp,
+                                                curr_state[feed_url]);
   } else {
-    curr_checked_lut[feed_url] = timestamp;
+    curr_state[feed_url] = timestamp;
   }
 
   // Construct date string and clean up post and feed titles.
@@ -85,6 +132,8 @@ function construct_jekyll_filename( feed_data, post_data ) {
 // successfully parsed feed entry. Finally calls the deploy function.
 function generate_files() {
     
+    var written_files = [];
+
     for (var i in feed_table) {
 
       console.log("---\nFeed:", i);
@@ -98,36 +147,58 @@ function generate_files() {
 
         var post_filename  = blob.filename;
         var post_timestamp = blob.timestamp;
-        var post_path = site_repo_path + "_posts/" + post_filename;
+        var post_path = site_repo_path + "/_posts/" + post_filename;
 
         // Should not happen; but check if we tried to generate a previously
         // created file/post.
         if (fs.existsSync(post_path))
         {
-          console.error(post_path + "already exist!");
+          console.error(post_path + " already exist!");
         } else {
 
           // Construct file content, mostly YAML front matter.
-          var post_content  = '---\n';
-              post_content += 'title: > ' + sanitizer.escape(post_data.title) + '\n';
-              post_content += 'blog: > ' + feed_table[i].title + '\n';
-              post_content += 'blogurl: > ' + feed_table[i].site + '\n';
-              post_content += 'link: > ' + post_data.link + '\n';
-              post_content += 'timestamp: ' + post_timestamp + '\n';
-              post_content += '---\n';
+          var content  = '---\n';
+              content += 'title: > ' + sanitizer.escape(post_data.title) + '\n';
+              content += 'blog: > ' + feed_table[i].title + '\n';
+              content += 'blogurl: > ' + feed_table[i].site + '\n';
+              content += 'link: > ' + post_data.link + '\n';
+              content += 'timestamp: ' + post_timestamp + '\n';
+              content += '---\n';
 
-          fs.writeFileSync(post_path, post_content);
+          if (!dry_run) {
+            fs.writeFileSync(post_path, content);
+          }
           console.log("Wrote:", post_path);
+          written_files.push( "/_posts/" + post_filename );
         }
 
       };
     };
 
-    // todo write curr
-    //console.log(curr_checked_lut);
-    //last_checked_lut = curr_checked_lut;
+    // write current fetch state to repo
+    last_state = curr_state;
+    curr_state = {};
+    write_state();
+    written_files.push('/_data/fetch_state.json');
 
-    // todo deploy changes
+    // deploy changes
+    if (!dry_run) {
+      deploy( written_files, function(err) {
+        if (err)
+        {
+          console.error("Deploy error: ", err);
+        } else {
+          console.log("Deploy successful!");
+          setTimeout(update_site, check_interval * 1000.0);
+        }
+
+      } );
+    } else {
+
+      console.log("Dry run, skipping deploy().");
+      setTimeout(update_site, check_interval * 1000.0);
+
+    }
 
 }
 
@@ -193,37 +264,82 @@ function fetch(feed_name, feed_data) {
   });
 }
 
+function read_state () {
+
+  try {
+    last_state = JSON.parse(
+      fs.readFileSync( site_repo_path + '/_data/fetch_state.json' ));
+  } catch (e) {
+    console.error("Error while reading last fetch state:", e ); 
+  }
+}
+
+function write_state () {
+
+  fs.writeFileSync( site_repo_path + '/_data/fetch_state.json',
+    JSON.stringify( last_state ) );
+
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Main entry point, request the feed list JSON file and start fetching feeds.
-request(feeds_url,
-  function (error, response, body) {
+function update_site() {
 
-  console.log(error, response, body);
+  repo.remote_fetch("origin master", function (fetch_err) {
 
-  if (!error && response.statusCode == 200) {
-
-    try {
-
-      feed_list = JSON.parse(body);
-
-      // count feeds
-      feed_count_tot = 0;
-      feed_count     = 0;
-      for (var i in feed_list) {
-        feed_count_tot += 1;
-      }
-
-      for (var i in feed_list) {
-          console.log("Fetching feed:", i);
-          fetch(i, feed_list[i]);
-      }
-
-    } catch (e) {
-      console.error("JSON parsing error:", e); 
+    if (fetch_err)
+    {
+      console.error("Error while fetching repo:", fetch_err);
+      return;
     }
-  }
-})
 
-console.log("123");
+    // read latest state
+    read_state();
+    
+    request( feeds_url,
+      function (error, response, body) {
+
+        if (!error && response.statusCode == 200) {
+
+          console.log("Got feed list, parsing as JSON...");
+          try {
+
+            feed_list = JSON.parse( body );
+
+            // count feeds
+            feed_count_tot = 0;
+            feed_count     = 0;
+            for (var i in feed_list) {
+              feed_count_tot += 1;
+            }
+            console.log("Feed list contains " + feed_count_tot + " feeds.");
+
+            for (var i in feed_list) {
+              console.log("Fetching feed:", i);
+              fetch(i, feed_list[i]);
+            }
+
+          } catch (e) {
+            console.error("Feed list JSON parsing error:", e); 
+          }
+
+        } else {
+          console.error("Error requesting feed list:", error);
+        }
+
+    });
+  });
+
+}
+
+
+console.log("Feed list URL:", feeds_url);
+console.log("Site repo:", site_repo_path);
+console.log("Dry run:", dry_run);
+console.log("Fetch interval:", check_interval + "s");
+update_site();
+
+
+
 
 
